@@ -10,7 +10,7 @@ import { mockDevServerPlugin } from "vite-plugin-mock-dev-server";
 
 import UnoCSS from "unocss/vite";
 import { resolve } from "path";
-import { name, version } from "./package.json";
+import { name, version } from "./package.json" with { type: "json" };
 
 // 平台名称、版本信息
 const __APP_INFO__ = {
