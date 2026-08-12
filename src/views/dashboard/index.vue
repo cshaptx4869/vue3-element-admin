@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="dash">
     <section class="dash-header">
       <div class="card dash-header__card">

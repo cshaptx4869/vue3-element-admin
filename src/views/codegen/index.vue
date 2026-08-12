@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="page-container">
     <TableList ref="tableListRef" @generate="handleOpenDrawer" @reset-config="handleResetConfig" />
 

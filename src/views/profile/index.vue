@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="profile-page">
     <section class="profile-hero">
       <div class="profile-hero__body">

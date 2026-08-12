@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <template v-if="tagType">
     <el-tag :type="tagType" :size="tagSize">{{ label }}</el-tag>
   </template>

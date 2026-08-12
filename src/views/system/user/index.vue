@@ -1,4 +1,4 @@
-﻿<!-- 用户管理 -->
+<!-- 用户管理 -->
 <template>
   <div class="page-container page-container--split user-page">
     <aside class="page-aside" :class="{ 'is-collapsed': sidebarCollapsed }">

@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="page-container">
     <!-- 表格 -->
     <VxeGrid ref="xGrid" v-bind="gridOptions" v-on="gridEvents">

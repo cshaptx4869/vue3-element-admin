@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="page-container">
     <el-card ref="tableWrapperRef" class="page-search" shadow="never">
       <el-form ref="queryFormRef" :model="params" :inline="true">
