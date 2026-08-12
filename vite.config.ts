@@ -4,12 +4,14 @@ import { type ConfigEnv, type UserConfig, loadEnv, defineConfig } from "vite";
 
 import AutoImport from "unplugin-auto-import/vite";
 import Components from "unplugin-vue-components/vite";
+import type { ComponentInfo, ComponentResolverObject } from "unplugin-vue-components";
 import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
 
 import { mockDevServerPlugin } from "vite-plugin-mock-dev-server";
 
 import UnoCSS from "unocss/vite";
 import { resolve } from "path";
+import fs from "node:fs";
 import { name, version } from "./package.json" with { type: "json" };
 
 // 平台名称、版本信息
@@ -21,9 +23,95 @@ const __APP_INFO__ = {
 // ESM 模式下使用 import.meta.dirname（Node 20.11+）
 const pathSrc = resolve(import.meta.dirname, "src");
 
+// Element Plus 按需样式解析器（与下方 AutoImport/Components 同配置，保证解析结果一致）
+const [elementPlusComponentResolver, elementPlusDirectiveResolver] = ElementPlusResolver({
+  importStyle: "sass",
+}) as [ComponentResolverObject, ComponentResolverObject];
+
+/** kebab-case 组件名转 El 前缀 PascalCase：el-button-group → ElButtonGroup */
+function toElementPlusName(kebabName: string): string {
+  return `El${kebabName
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("")}`;
+}
+
+/** 收集 resolver 解析出的样式副作用路径（sideEffects 支持 string / ImportInfo / 数组） */
+function collectSideEffects(resolved: ComponentInfo | string, styleImports: Set<string>): void {
+  if (typeof resolved === "string") return; // Element Plus 返回 ComponentInfo，字符串路径防御性跳过
+  const { sideEffects } = resolved;
+  if (!sideEffects) return;
+  if (Array.isArray(sideEffects)) {
+    for (const effect of sideEffects) {
+      styleImports.add(typeof effect === "string" ? effect : effect.from);
+    }
+  } else {
+    styleImports.add(typeof sideEffects === "string" ? sideEffects : sideEffects.from);
+  }
+}
+
+// 扫描 src 实际用到的 Element Plus 组件/指令，经 resolver 解析出样式预构建清单。
+// 与硬编码清单作用等价（首启预构建、避免首次使用时页面刷新），但随源码用法自动增删。
+async function collectElementPlusStyleImports(): Promise<string[]> {
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        walk(resolve(dir, entry.name));
+      } else if (/\.(vue|ts|tsx|js|jsx)$/.test(entry.name)) {
+        files.push(resolve(dir, entry.name));
+      }
+    }
+  };
+  walk(pathSrc);
+
+  const componentNames = new Set<string>();
+  const directiveNames = new Set<string>();
+
+  for (const file of files) {
+    const source = fs.readFileSync(file, "utf-8");
+
+    // <el-button> / <el-form-item> 等 kebab-case 标签
+    for (const match of source.matchAll(/<el-([a-z0-9][a-z0-9-]*)/g)) {
+      componentNames.add(toElementPlusName(match[1]));
+    }
+    // <ElTable> / <ElButton> 等 PascalCase 标签
+    for (const match of source.matchAll(/<([A-Z][A-Za-z0-9]*)/g)) {
+      if (match[1].startsWith("El")) componentNames.add(match[1]);
+    }
+    // ElMessage / ElMessageBox / ElLoading 等脚本标识符
+    for (const match of source.matchAll(/\bEl[A-Z][A-Za-z0-9]*\b/g)) {
+      componentNames.add(match[0]);
+    }
+    // v-loading / v-popover / v-infinite-scroll 指令
+    for (const match of source.matchAll(/\bv-(loading|popover|infinite-scroll)\b/g)) {
+      directiveNames.add(
+        match[1]
+          .split("-")
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join("")
+      );
+    }
+  }
+
+  const styleImports = new Set<string>();
+  for (const name of componentNames) {
+    const resolved = await elementPlusComponentResolver.resolve(name);
+    if (resolved) collectSideEffects(resolved, styleImports);
+  }
+  for (const name of directiveNames) {
+    const resolved = await elementPlusDirectiveResolver.resolve(name);
+    if (resolved) collectSideEffects(resolved, styleImports);
+  }
+  return [...styleImports];
+}
+
 // Vite配置  https://cn.vitejs.dev/config
-export default defineConfig(({ mode }: ConfigEnv): UserConfig => {
+export default defineConfig(async ({ mode }: ConfigEnv): Promise<UserConfig> => {
   const env = loadEnv(mode, process.cwd());
+  // 生成 Element Plus 组件样式预构建清单（resolver 驱动）
+  const elementPlusStyleImports = await collectElementPlusStyleImports();
 
   return {
     resolve: {
@@ -113,8 +201,9 @@ export default defineConfig(({ mode }: ConfigEnv): UserConfig => {
         "element-plus/es",
         "element-plus/es/locale/lang/en",
         "element-plus/es/locale/lang/zh-cn",
-        // Element Plus 组件样式由 unplugin-vue-components 的 ElementPlusResolver 按需导入，
-        // Vite 在运行时自动发现并预构建，无需在此维护硬编码的组件清单
+        // Element Plus 组件样式预构建（resolver 驱动）：扫描 src 实际用到的组件/指令，
+        // 解析出 base + 组件样式路径，首启即预加载，避免首次使用某组件时重优化导致页面刷新
+        ...elementPlusStyleImports,
       ],
     },
     // 构建配置（Vite 8 使用 Rolldown + Oxc）
