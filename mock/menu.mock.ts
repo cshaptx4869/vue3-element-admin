@@ -1474,7 +1474,7 @@ export default defineMock([
               type: "M",
               routeName: null,
               routePath: "dict-demo",
-              component: "demo/dict",
+              component: "demo/dictionary",
               sort: 4,
               visible: 1,
               icon: "",
