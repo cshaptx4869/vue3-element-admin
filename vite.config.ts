@@ -4,7 +4,7 @@ import { type ConfigEnv, type UserConfig, loadEnv, defineConfig } from "vite";
 
 import AutoImport from "unplugin-auto-import/vite";
 import Components from "unplugin-vue-components/vite";
-import type { ComponentInfo, ComponentResolverObject } from "unplugin-vue-components";
+import type { ComponentResolverObject } from "unplugin-vue-components";
 import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
 
 import { mockDevServerPlugin } from "vite-plugin-mock-dev-server";
@@ -22,90 +22,6 @@ const __APP_INFO__ = {
 
 // ESM 模式下使用 import.meta.dirname（Node 20.11+）
 const pathSrc = resolve(import.meta.dirname, "src");
-
-// Element Plus 按需样式解析器（与下方 AutoImport/Components 同配置，保证解析结果一致）
-const [elementPlusComponentResolver, elementPlusDirectiveResolver] = ElementPlusResolver({
-  importStyle: "sass",
-}) as [ComponentResolverObject, ComponentResolverObject];
-
-/** kebab-case 组件名转 El 前缀 PascalCase：el-button-group → ElButtonGroup */
-function toElementPlusName(kebabName: string): string {
-  return `El${kebabName
-    .split("-")
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join("")}`;
-}
-
-/** 收集 resolver 解析出的样式副作用路径（sideEffects 支持 string / ImportInfo / 数组） */
-function collectSideEffects(resolved: ComponentInfo | string, styleImports: Set<string>): void {
-  if (typeof resolved === "string") return; // Element Plus 返回 ComponentInfo，字符串路径防御性跳过
-  const { sideEffects } = resolved;
-  if (!sideEffects) return;
-  if (Array.isArray(sideEffects)) {
-    for (const effect of sideEffects) {
-      styleImports.add(typeof effect === "string" ? effect : effect.from);
-    }
-  } else {
-    styleImports.add(typeof sideEffects === "string" ? sideEffects : sideEffects.from);
-  }
-}
-
-// 扫描 src 实际用到的 Element Plus 组件/指令，经 resolver 解析出样式预构建清单。
-// 与硬编码清单作用等价（首启预构建、避免首次使用时页面刷新），但随源码用法自动增删。
-async function collectElementPlusStyleImports(): Promise<string[]> {
-  const files: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        walk(resolve(dir, entry.name));
-      } else if (/\.(vue|ts|tsx|js|jsx)$/.test(entry.name)) {
-        files.push(resolve(dir, entry.name));
-      }
-    }
-  };
-  walk(pathSrc);
-
-  const componentNames = new Set<string>();
-  const directiveNames = new Set<string>();
-
-  for (const file of files) {
-    const source = fs.readFileSync(file, "utf-8");
-
-    // <el-button> / <el-form-item> 等 kebab-case 标签
-    for (const match of source.matchAll(/<el-([a-z0-9][a-z0-9-]*)/g)) {
-      componentNames.add(toElementPlusName(match[1]));
-    }
-    // <ElTable> / <ElButton> 等 PascalCase 标签
-    for (const match of source.matchAll(/<([A-Z][A-Za-z0-9]*)/g)) {
-      if (match[1].startsWith("El")) componentNames.add(match[1]);
-    }
-    // ElMessage / ElMessageBox / ElLoading 等脚本标识符
-    for (const match of source.matchAll(/\bEl[A-Z][A-Za-z0-9]*\b/g)) {
-      componentNames.add(match[0]);
-    }
-    // v-loading / v-popover / v-infinite-scroll 指令
-    for (const match of source.matchAll(/\bv-(loading|popover|infinite-scroll)\b/g)) {
-      directiveNames.add(
-        match[1]
-          .split("-")
-          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-          .join("")
-      );
-    }
-  }
-
-  const styleImports = new Set<string>();
-  for (const name of componentNames) {
-    const resolved = await elementPlusComponentResolver.resolve(name);
-    if (resolved) collectSideEffects(resolved, styleImports);
-  }
-  for (const name of directiveNames) {
-    const resolved = await elementPlusDirectiveResolver.resolve(name);
-    if (resolved) collectSideEffects(resolved, styleImports);
-  }
-  return [...styleImports];
-}
 
 // Vite配置  https://cn.vitejs.dev/config
 export default defineConfig(async ({ mode }: ConfigEnv): Promise<UserConfig> => {
@@ -248,3 +164,65 @@ export default defineConfig(async ({ mode }: ConfigEnv): Promise<UserConfig> => 
     },
   };
 });
+
+// ── 工具函数 ──────────────────────────────────────────────────────────────
+// Element Plus 按需样式解析器（与上方 AutoImport/Components 同配置，保证解析结果一致）
+const elementPlusComponentResolver = ElementPlusResolver({
+  importStyle: "sass",
+})[0] as ComponentResolverObject;
+
+// 扫描 src 实际用到的 Element Plus 组件/指令，经 resolver 解析出 base + 组件样式路径，
+// 供 optimizeDeps 首启预构建，避免首次使用某组件时重优化导致页面刷新。
+// 指令统一转成组件名解析（v-loading → ElLoading），与组件共用同一 resolver。
+async function collectElementPlusStyleImports(): Promise<string[]> {
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        walk(resolve(dir, entry.name));
+      } else if (/\.(vue|ts|tsx|js|jsx)$/.test(entry.name)) {
+        files.push(resolve(dir, entry.name));
+      }
+    }
+  };
+  walk(pathSrc);
+
+  // kebab-case 名转 El 前缀 PascalCase：el-button-group → ElButtonGroup
+  const toPascalName = (kebab: string) =>
+    `El${kebab
+      .split("-")
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join("")}`;
+
+  const names = new Set<string>();
+  for (const file of files) {
+    const source = fs.readFileSync(file, "utf-8");
+
+    for (const match of source.matchAll(/<el-([a-z0-9][a-z0-9-]*)/g)) {
+      names.add(toPascalName(match[1])); // <el-button> / <el-form-item>
+    }
+    for (const match of source.matchAll(/<([A-Z][A-Za-z0-9]*)/g)) {
+      if (match[1].startsWith("El")) names.add(match[1]); // <ElTable> / <ElButton>
+    }
+    for (const match of source.matchAll(/\bEl[A-Z][A-Za-z0-9]*\b/g)) {
+      names.add(match[0]); // ElMessage / ElMessageBox 等脚本标识符
+    }
+    for (const match of source.matchAll(/\bv-(loading|popover|infinite-scroll)\b/g)) {
+      names.add(toPascalName(match[1])); // v-loading → ElLoading
+    }
+  }
+
+  // 每个名字经 resolver 解析出的副作用即所需样式路径（sideEffects 支持 string / ImportInfo / 数组）
+  const styleImports = new Set<string>();
+  for (const name of names) {
+    const resolved = await elementPlusComponentResolver.resolve(name);
+    if (!resolved || typeof resolved === "string") continue;
+    const { sideEffects } = resolved;
+    if (!sideEffects) continue;
+    for (const effect of Array.isArray(sideEffects) ? sideEffects : [sideEffects]) {
+      styleImports.add(typeof effect === "string" ? effect : effect.from);
+    }
+  }
+  return [...styleImports];
+}
