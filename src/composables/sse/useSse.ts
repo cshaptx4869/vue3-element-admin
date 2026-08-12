@@ -1,4 +1,5 @@
 import { AuthStorage } from "@/utils/auth";
+import { useUserStoreHook } from "@/stores/user";
 
 /** SSE 连接配置选项 */
 export interface UseSseOptions {
@@ -58,6 +59,7 @@ function createSseConnection(options: UseSseOptions = {}) {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempts = 0;
   let currentReconnectInterval = config.reconnectInterval;
+  let tokenRefreshed = false; // 本轮拒绝是否已刷新过令牌，防止无限刷新
 
   const eventHandlers = new Map<string, Set<EventHandler>>();
 
@@ -189,7 +191,8 @@ function createSseConnection(options: UseSseOptions = {}) {
     const token = AuthStorage.getAccessToken();
     if (!token) {
       log("未检测到有效令牌，稍后重试");
-      reconnectTimer = setTimeout(() => connect(), config.reconnectInterval);
+      // 走统一重连调度，受 maxReconnectAttempts 上限约束
+      scheduleReconnect();
       return;
     }
 
@@ -213,9 +216,26 @@ function createSseConnection(options: UseSseOptions = {}) {
       },
       signal: abortController.signal,
     })
-      .then((response) => {
+      .then(async (response) => {
         if (!response.ok) {
           if (response.status === 401 || response.status === 403) {
+            // 令牌过期：刷新后用新令牌重连，刷新失败或令牌仍无效则停止重连
+            if (!tokenRefreshed) {
+              tokenRefreshed = true;
+              connectionTimeoutTimer = clearTimer(connectionTimeoutTimer);
+              try {
+                const userStore = useUserStoreHook();
+                await userStore.refreshTokenOnce();
+                if (AuthStorage.getAccessToken()) {
+                  connectionState.value = SseConnectionState.DISCONNECTED;
+                  log(`SSE 连接被拒绝（HTTP ${response.status}），令牌已刷新，使用新令牌重连`);
+                  connect();
+                  return null;
+                }
+              } catch (err) {
+                logError("SSE 令牌刷新失败:", err);
+              }
+            }
             isManualDisconnect = true;
             connectionState.value = SseConnectionState.DISCONNECTED;
             log(`SSE 连接被拒绝（HTTP ${response.status}），不再重连`);
@@ -225,6 +245,7 @@ function createSseConnection(options: UseSseOptions = {}) {
         }
         connectionTimeoutTimer = clearTimer(connectionTimeoutTimer);
         connectionState.value = SseConnectionState.CONNECTED;
+        tokenRefreshed = false;
         resetReconnectState();
         log("SSE 连接已建立");
         return response.body?.getReader();

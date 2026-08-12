@@ -19,6 +19,7 @@ function createDictSyncComposable() {
 
   const callbacks: DictChangeCallback[] = [];
   let unsubscribe: (() => void) | null = null;
+  let initialized = false; // 防止重复初始化导致重复订阅
 
   // 处理字典变更消息：清除指定字典缓存，并通知所有已注册回调
   const handleDictChange = (data: DictChangeMessage) => {
@@ -38,13 +39,16 @@ function createDictSyncComposable() {
     });
   };
 
-  // 订阅 SSE 字典变更事件
+  // 订阅 SSE 字典变更事件（幂等：重复调用不会产生重复订阅）
   const initialize = () => {
+    if (initialized) return;
+    initialized = true;
     unsubscribe = sse.on(SseTopics.DICT, handleDictChange);
   };
 
   // 取消 SSE 订阅并清空所有回调
   const cleanup = () => {
+    initialized = false;
     unsubscribe?.();
     unsubscribe = null;
     callbacks.length = 0;
