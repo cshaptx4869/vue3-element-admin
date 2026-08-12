@@ -175,7 +175,7 @@ function createSseConnection(options: UseSseOptions = {}) {
     }, currentReconnectInterval);
   };
 
-  // 建立连接：校验 token → fetch → 超时检测 → 消费流；401/403 不重连
+  // 建立连接：校验 token → fetch → 超时检测 → 消费流；401/403 先刷新令牌重连，失败则停止
   const connect = () => {
     isManualDisconnect = false;
 
